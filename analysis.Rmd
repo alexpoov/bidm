@@ -1,0 +1,229 @@
+---
+title: "BIDM Experiment Analysis"
+author: "alexpoov"
+date: "Last updated: `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  rmarkdown::html_document:
+      theme: readable
+      highlight: espresso
+      code_folding: hide
+      toc: true
+      toc_float: true
+---
+
+### Загрузка данных
+
+```{r}
+data = s3read_using(FUN = read.csv, object = "s3://bidm-bucket/data_courses_cleaned.csv") %>% select(-X)
+logs = s3read_using(FUN = read.csv, object = "s3://bidm-bucket/logs.csv") %>% 
+  select(-X) %>% 
+  filter(userId != 100001 & value != "test")
+rh = s3read_using(FUN = read.csv, object = "s3://bidm-bucket/reward_history.csv") %>%  
+  select(-X) %>% 
+  filter(userId != 100001)
+```
+
+### Продолжительность попыток 
+
+
+```{r}
+alogs_start_end = logs %>% 
+  filter(action == "start") %>% 
+  select(start = timestamp, userId, version) %>% 
+  inner_join(logs %>% 
+               filter(action == "awareness") %>% 
+               select(finish = timestamp, userId, version), 
+             by = c("userId", "version"))
+
+alogs_start_end$start = as.POSIXct(alogs_start_end$start, tz = "CET")
+alogs_start_end$finish = as.POSIXct(alogs_start_end$finish, tz = "CET")
+```
+
+```{r}
+tail(alogs_start_end)
+```
+
+```{r}
+beautyplot = function(data, caption) {ggplot(arrange(data, version), aes(x = start, y = userId, colour = version)) +
+    geom_segment(aes(xend = finish, yend = userId, colour = version), alpha = 0.3) + 
+    scale_color_manual(values=c("#F8766D", "#A6A6A6", "#619CFF")) +
+    geom_point(size = 1) +
+    geom_point(aes(x = finish), size = 1) +
+    theme_bw() +
+    theme(legend.position = "none") + 
+    labs(title = caption,
+         subtitle = "Control version is red, Test version is blue, Frauds are gray", 
+         xlab = "Date and Time", 
+         ylab = "User Id")}
+
+alogs_start_end %>% 
+  mutate(time = difftime(finish, start, units = "secs"),
+         version = ifelse(time < 120, "fraud", version)) %>% 
+  beautyplot("Time for users to complete the experiment")
+```
+
+1st run
+
+```{r}
+alogs_start_end %>% 
+  filter(start <= '2023-05-24 18:00:00') %>% 
+  mutate(time = difftime(finish, start, units = "secs"),
+         version = ifelse(time < 120, "fraud", version)) %>% 
+  beautyplot("Time for users to complete the experiment (1st epoch)")
+```
+
+2nd run
+
+```{r}
+alogs_start_end %>% 
+  filter(start >= '2023-05-24 18:00:00' & start <='2023-05-25 08:00:00') %>% 
+  mutate(time = difftime(finish, start, units = "secs"),
+         version = ifelse(time < 120, "fraud", version)) %>% 
+  beautyplot("Time for users to complete the experiment (2nd epoch)")
+```
+
+3rd run
+
+```{r}
+alogs_start_end %>% 
+  filter(start >'2023-05-25 08:00:00') %>% 
+  mutate(time = difftime(finish, start, units = "secs"),
+         version = ifelse(time < 120, "fraud", version)) %>% 
+  beautyplot("Time for users to complete the experiment (3rd epoch)")
+```
+### Results
+
+Фильтрация данных 
+
+```{r}
+logs_fraud = alogs_start_end %>% 
+  mutate(time = difftime(finish, start, units = "secs"),
+         version = ifelse(time < 120, "fraud", version))
+
+logs_fraud %>%
+  group_by(version) %>%
+  count()
+
+print(paste('fraud rate:', round(109/nrow(alogs_start_end), 4)))
+
+logs = logs %>% 
+  filter(userId %in% filter(logs_fraud, version != "fraud")$userId)
+```
+
+```{r}
+# системные
+rh %>% 
+  group_by(version) %>% 
+  summarise(mean_reward = mean(reward),
+            stddev = sd(reward))
+```
+
+```{r}
+t.test(filter(rh, version == "control")$reward, filter(rh, version == "test")$reward, paired = TRUE)
+```
+
+Теперь рзультаты по пользователям: сначала уберём фрауд
+
+
+
+```{r}
+# awareness
+
+logs_aw_obj = logs %>% 
+  filter(action == "course_awareness") %>%
+  group_by(userId) %>% 
+  summarise(awareness_obj = n())
+
+logs_aw = logs %>% 
+  filter(action == "awareness") %>% 
+  select(version, userId, awareness_subj = value) %>% 
+  inner_join(logs_aw_obj, by = "userId")
+
+# engagement
+
+logs_en_obj = alogs_start_end %>% 
+  group_by(userId) %>% 
+  summarise(engagement_obj = as.numeric(difftime(finish, start, units = "secs")))
+
+logs_en = logs %>% 
+  filter(action == "engagement") %>% 
+  select(version, userId, engagement_subj = value) %>% 
+  inner_join(logs_en_obj, by = "userId")
+
+logs_tr = logs %>% 
+  filter(action == "transparency") %>% 
+  select(version, userId, transparency = value)
+
+logs_analysis = inner_join(logs_aw, logs_en, by = c("version", "userId")) %>% 
+  inner_join(logs_tr, by = c("version", "userId")) %>% 
+  mutate_at(c('awareness_subj', 'engagement_subj', 'transparency'), as.numeric)
+
+head(logs_analysis)
+```
+
+```{r}
+logs_analysis %>% 
+  select(-userId) %>% 
+  ggplot() +
+  geom_histogram(aes(as.numeric(transparency)))
+```
+
+Корреляция 
+
+```{r}
+# Function to extract correlation coefficient and p-values
+data_for_cortest_test = logs_analysis %>% 
+  filter(version == "test") %>% 
+    select(-version, -userId)
+
+# The population correlation coefficient IS NOT significantly different from zero
+cor.test(data_for_cortest_test$awareness_subj, data_for_cortest_test$awareness_obj) # 
+cor.test(data_for_cortest_test$engagement_subj, data_for_cortest_test$engagement_obj)
+cor.test(data_for_cortest_test$awareness_subj, data_for_cortest_test$engagement_subj)
+cor.test(data_for_cortest_test$awareness_subj, data_for_cortest_test$transparency)
+cor.test(data_for_cortest_test$engagement_subj, data_for_cortest_test$transparency)
+
+```
+
+Про доли курсов consideration set'ов
+
+```{r}
+awareness_set_size = logs %>% 
+  filter(version == "test", action == "course_awareness") %>%
+  group_by(userId) %>% 
+  summarise(awareness_set_size = n())
+
+consideration_set_size = logs %>% 
+  filter(version == "test", action == "consideration_set") %>%
+  group_by(userId) %>% 
+  summarise(consideration_set_size = str_count(value, ";")+1)
+
+alogs_start_end = alogs_start_end %>% 
+  mutate(time_sec = as.numeric(difftime(finish, start, units = "secs")))
+
+awareness_to_consideration = inner_join(awareness_set_size, consideration_set_size, by = "userId") %>% 
+  inner_join(select(alogs_start_end, userId, time_sec), by = "userId") %>% 
+  group_by(userId) %>% 
+  filter(row_number(userId) == 1) %>% 
+  mutate(awar_cons_diff = awareness_set_size - consideration_set_size,
+         consider_3plus = ifelse(consideration_set_size > 3, TRUE, FALSE))
+
+test_active = awareness_to_consideration %>% filter(consider_3plus == TRUE)
+test_active = as.list(test_active$userId)
+test_passive = awareness_to_consideration %>% filter(consider_3plus == FALSE)
+test_passive = as.list(test_passive$userId)
+
+
+act_pass = rh %>% 
+  filter(version == "test") %>% 
+  mutate(act_pass = ifelse(userId %in% test_active, 'active', 'passive'))
+
+act_pass %>% 
+  group_by(act_pass) %>% 
+  summarise(mean_reward = mean(reward),
+            stddev = sd(reward))
+
+t.test(filter(act_pass, act_pass == "active")$reward, filter(act_pass, act_pass == "passive")$reward, paired = TRUE)
+
+```
+

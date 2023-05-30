@@ -1,0 +1,13 @@
+name: bidm_experiment
+title: bidm_experiment
+username:
+account: alexpoov
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 9136974
+bundleId: 7258503
+url: https://alexpoov.shinyapps.io/BIDM_experiment/
+when: 1684947744.3974
+lastSyncTime: 1684947744.39741
+asMultiple: FALSE
+asStatic: FALSE

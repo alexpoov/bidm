@@ -4,8 +4,7 @@
 * decide_version.R - UCB MAB
 * analysis.Rmd - experiment study results analysis
 
-## Improving Educational Choice through Behavioural Interventions:
-an Experimental Approach | Aleksandr Popov
+## Improving Educational Choice through Behavioural Interventions: an Experimental Approach | Aleksandr Popov
 
 Abstract
 
